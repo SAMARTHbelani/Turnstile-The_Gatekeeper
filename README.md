@@ -1,58 +1,179 @@
-> I know this readme is written using ai.
-> Yes, I use AI to write my README files. Bite me. 🧛‍♂️
+# Turnstile
 
-# Turnstile: C++20 Unidirectional TCP Proxy
+**Turnstile is an experimental, event-driven TCP forwarding proxy
+written in C++20.**
 
-Turnstile is a lightweight, high-performance TCP ingestion proxy built entirely from scratch in C++20. Acting as a one-way middleman (a data diode or telemetry forwarder), it multiplexes concurrent client connections and securely routes data to an upstream target without relying on heavy external networking frameworks.
+The project is a hands-on exploration of POSIX socket programming,
+non-blocking I/O, connection management, and resource ownership in C++.
+It currently accepts TCP clients on a local listening socket and
+forwards client data to a configured upstream endpoint.
 
-## 🧠 Architecture & Technical Details
+> **Project status:** Work in progress. The current implementation is an
+> early prototype, not a production-ready proxy. Bidirectional
+> forwarding, robust asynchronous connection handling, bounded
+> buffering, and comprehensive error handling are still being developed.
 
-This project was built to demonstrate a deep understanding of POSIX systems programming, memory safety, and event-driven architectures:
+## Current scope
 
-* **Single-Threaded Event Loop:** Uses the POSIX `poll()` system call to monitor multiple socket descriptors concurrently, avoiding the massive memory overhead and context-switching of a thread-per-connection model.
-* **Non-Blocking I/O State Machine:** All sockets are configured with `O_NONBLOCK`. The proxy handles partial reads/writes, buffers chunks in userspace vectors, and gracefully manages `EAGAIN`/`EWOULDBLOCK` signals without hanging the main thread.
-* **Zero-Leak Resource Management:** Implements strict C++ RAII (Resource Acquisition Is Initialization) and move semantics to wrap volatile POSIX file descriptors. Sockets are guaranteed to be closed deterministically the moment a session goes out of scope or a connection drops.
+The current prototype includes:
 
-## 🛠️ Build Instructions
+-   A TCP listening socket created with POSIX networking APIs.
+-   A `poll()`-based event loop for monitoring the listener and client
+    connections.
+-   Non-blocking socket setup using `fcntl()` and `O_NONBLOCK`.
+-   A session abstraction that owns client and upstream socket
+    descriptors.
+-   An `FdWrapper` RAII type with deleted copy operations and move
+    support.
+-   A client-to-upstream data path using `recv()` and `send()`.
+-   Basic handling of `EAGAIN` and `EWOULDBLOCK` while reading and
+    writing.
 
-**Prerequisites:**
-* A Unix-like environment (macOS or Linux)
-* A modern C++ compiler (GCC 10+ or Clang 10+ for C++20 support)
-* CMake 3.15+
+The implementation is intentionally being developed incrementally. The
+items above describe the current code structure; they should not be
+interpreted as a claim that every socket lifecycle and failure case is
+already handled correctly.
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/turnstile-proxy.git
-cd turnstile-proxy
+## Architecture
 
-# Generate build files and compile
-mkdir build && cd build
-cmake ..
+At a high level, the current code is organized into these components:
+
+  -----------------------------------------------------------------------
+  Component                           Responsibility
+  ----------------------------------- -----------------------------------
+  `Listener`                          Creates and owns the TCP listening
+                                      socket and accepts clients.
+
+  `EventLoop`                         Uses `poll()` to monitor socket
+                                      readiness and dispatch events.
+
+  `Session`                           Holds the client/upstream
+                                      descriptors and the
+                                      client-to-upstream buffer.
+
+  `FdWrapper`                         Provides basic RAII ownership and
+                                      move semantics for a file
+                                      descriptor.
+
+  `common`                            Contains shared networking
+                                      utilities.
+  -----------------------------------------------------------------------
+
+The event loop is single-threaded. Rather than creating one thread per
+client, it waits for readiness notifications from `poll()` and processes
+the descriptors that become ready.
+
+## Current network configuration
+
+The prototype currently uses fixed endpoints in the source code:
+
+  Setting                 Value
+  ----------------------- -------------
+  Client listening port   `8008`
+  Upstream address        `127.0.0.1`
+  Upstream port           `9090`
+  Address family          IPv4
+  Event notification      `poll()`
+
+These values are not configurable through command-line arguments or a
+configuration file yet.
+
+## Build
+
+### Requirements
+
+-   Linux or macOS with POSIX socket APIs
+-   A C++20-compatible compiler
+-   GNU Make
+
+The supplied Makefile defaults to `g++-16`. If that compiler is not
+installed, override `CXX` with an available C++20 compiler.
+
+``` bash
+git clone https://github.com/SAMARTHbelani/turnstile.git
+cd turnstile
+
+# Build with the Makefile's default compiler (g++-16)
 make
+
+# Or select another compiler, for example:
+make clean
+make CXX=clang++
 ```
 
-## 🚀 Usage & End-to-End Testing
+The current Makefile produces an executable named `gatekeeper`. The
+executable name will be aligned with the project name as the
+implementation is cleaned up.
 
-Because Turnstile is a Layer 4 TCP proxy, you can test it easily using the standard Unix `nc` (Netcat) utility. You will need three separate terminal tabs.
+To remove generated object files and the executable:
 
-**Terminal 1: Start the Upstream Server**
-This acts as your secure backend database or log aggregator.
-```bash
+``` bash
+make clean
+```
+
+## Running the prototype
+
+The current source uses `127.0.0.1:9090` as its upstream and listens for
+clients on port `8008`.
+
+Open one terminal and start a local TCP service on port `9090`:
+
+``` bash
 nc -l 9090
 ```
 
-**Terminal 2: Start Turnstile**
-```bash
+In another terminal, run the proxy:
+
+``` bash
 ./gatekeeper
 ```
 
-**Terminal 3: Connect the Client**
-Connect to the proxy and start typing.
-```bash
-nc localhost 8008
+In a third terminal, connect a client:
+
+``` bash
+nc 127.0.0.1 8008
 ```
 
-Type a message into Terminal 3 and press Enter. You will see Turnstile act as the perfect middleman, buffering the bytes and immediately routing them out to Terminal 1!
+This is an initial local smoke-test setup, not a complete
+integration-test suite. Netcat command-line options vary between
+operating systems and implementations.
 
-## 📜 License
-MIT License
+## Engineering work in progress
+
+The next development milestones are:
+
+1.  Correctly complete non-blocking upstream connections, including
+    `EINPROGRESS` and `SO_ERROR` handling.
+2.  Implement forwarding in both directions, including partial writes
+    and independent read/write readiness.
+3.  Add bounded buffers and backpressure so a slow upstream cannot cause
+    unbounded memory growth.
+4.  Handle TCP EOF and half-close behavior without prematurely
+    terminating the reverse direction.
+5.  Improve handling of `EINTR`, socket errors, hang-ups, and
+    interrupted or failed system calls.
+6.  Make descriptor ownership consistent across all socket-owning
+    classes.
+7.  Add automated tests, sanitizer builds, and reproducible performance
+    measurements.
+
+## Design goals
+
+The project is being developed around a few practical
+systems-programming concerns:
+
+-   **Explicit resource ownership:** file descriptors should have clear
+    owners and deterministic cleanup.
+-   **Non-blocking I/O:** socket operations should not stall the event
+    loop while waiting for network activity.
+-   **Correct stream handling:** TCP is a byte stream; reads and writes
+    may process fewer bytes than requested.
+-   **Bounded resource usage:** connection and buffer growth should be
+    controlled.
+-   **Observable behavior:** failures and connection state transitions
+    should be diagnosable.
+
+## License
+
+No license has been added to the repository yet. Add a license file
+before redistributing the project or accepting external contributions.
